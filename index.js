@@ -8,7 +8,9 @@ import fastifyWs from '@fastify/websocket';
 dotenv.config();
 
 // Retrieve the OpenAI API key from environment variables.
-const { OPENAI_API_KEY } = process.env;
+const { OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER } = process.env;
+
+
 
 if (!OPENAI_API_KEY) {
     console.error('Missing OpenAI API key. Please set it in the .env file.');
@@ -21,7 +23,8 @@ fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
 
 // Constants
-const SYSTEM_MESSAGE = 'You are a helpful and bubbly AI assistant who loves to chat about anything the user is interested about and is prepared to offer them facts. You have a penchant for dad jokes, owl jokes, and rickrolling – subtly. Always stay positive, but work in a joke when appropriate.';
+const SYSTEM_MESSAGE = 'You are an AI-powered voice assistant for Sharp Healthcare, known as the "Shape Healthcare Assistant." Your primary role is to assist users with their medical needs by offering several key services. You can help users schedule appointments with healthcare providers, provide them with details about their prescription routines, including medication names and timings, and assist in finding the nearest hospital based on their location. Additionally, you are capable of displaying upcoming appointments, helping users cancel appointments when needed, and relaying important messages to caregivers or healthcare providers. Your interaction with the user should always begin with the greeting: "Hello, I am an AI-powered Voice Assistant for Sharp Healthcare. How can I help you today?" It is essential that you deliver timely, clear, and empathetic assistance, ensuring the confidentiality and security of all medical information. Your goal is to prioritize the users healthcare needs and provide accurate and efficient support in all interactions.'
+
 const VOICE = 'alloy';
 const PORT = process.env.PORT || 5050; // Allow dynamic port assignment
 
@@ -50,9 +53,6 @@ fastify.get('/', async (request, reply) => {
 fastify.all('/incoming-call', async (request, reply) => {
     const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
                           <Response>
-                              <Say>Please wait while we connect your call to the A. I. voice assistant, powered by Twilio and the Open-A.I. Realtime API</Say>
-                              <Pause length="1"/>
-                              <Say>O.K. you can start talking!</Say>
                               <Connect>
                                   <Stream url="wss://${request.headers.host}/media-stream" />
                               </Connect>
@@ -60,6 +60,7 @@ fastify.all('/incoming-call', async (request, reply) => {
 
     reply.type('text/xml').send(twimlResponse);
 });
+
 
 // WebSocket route for media-stream
 fastify.register(async (fastify) => {
@@ -85,7 +86,12 @@ fastify.register(async (fastify) => {
             const sessionUpdate = {
                 type: 'session.update',
                 session: {
-                    turn_detection: { type: 'server_vad' },
+                    turn_detection: {
+                         type: 'server_vad',
+                        threshold: 0.6,
+                        prefix_padding_ms: 500,
+                        silence_duration_ms: 2000
+                        },
                     input_audio_format: 'g711_ulaw',
                     output_audio_format: 'g711_ulaw',
                     voice: VOICE,
@@ -94,13 +100,158 @@ fastify.register(async (fastify) => {
                     temperature: 0.8,
                 }
             };
+            tools: [
+                {
+                    name: 'view_prescription',
+                    description: 'View the user\'s current prescription details.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' }
+                        },
+                        required: ['user_id']
+                    }
+                },
+                {
+                    name: 'schedule_appointments',
+                    description: 'Schedule an appointment for the user.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' },
+                            datetime: { type: 'string' },
+                            reason: { type: 'string' },
+                            doctor: { type: 'string' }
+                        },
+                        required: ['user_id', 'datetime', 'reason', 'doctor']
+                    }
+                },
+                {
+                    name: 'nearest_hospital',
+                    description: 'Find the nearest hospital for the user.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' }
+                        },
+                        required: ['user_id']
+                    }
+                },
+                {
+                    name: 'view_upcoming_app',
+                    description: 'View the user\'s upcoming appointments.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' }
+                        },
+                        required: ['user_id']
+                    }
+                },
+                {
+                    name: 'cancel_app',
+                    description: 'Cancel the user\'s appointment.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' },
+                            datetime: { type: 'string' },
+                            doctor: { type: 'string' }
+                        },
+                        required: ['user_id', 'datetime', 'doctor']
+                    }
+                },
+                {
+                    name: 'relay_message',
+                    description: 'Relay a message to the user\'s doctor.',
+                    parameters: {
+                        type: 'object',
+                        properties: {
+                            user_id: { type: 'string' },
+                            doctor: { type: 'string' },
+                            message: { type: 'string' }
+                        },
+                        required: ['user_id', 'doctor', 'message']
+                    }
+                }
+            ]
+        
 
             console.log('Sending session update:', JSON.stringify(sessionUpdate));
             openAiWs.send(JSON.stringify(sessionUpdate));
 
             // Uncomment the following line to have AI speak first:
              sendInitialConversationItem();
+
+             const handleFunctionCall = (functionName, params) => {
+                switch (functionName) {
+                    /*case 'view_prescriptions':
+                        viewPrescriptions(params.user_id);
+                        break;*/
+                     /*case 'schedule_appointments':
+                        scheduleAppointments(params.user_id, params.datetime, params.reason, params.doctor);
+                        break;*/
+                    case 'nearest_hospital':
+                        nearestHospital(params.user_id);
+                        break;
+                    /*case 'View upcoming appointments':
+                        viewUpcomingAppointments(params.user_id);
+                        break;
+                    case 'cancel_appointment':
+                        cancelAppointment(params.user_id, params.datetime, params.doctor);
+                        break;
+                    case 'relay_message':
+                        relayMessage(params.user_id, params.doctor, params.message);
+                        break;
+                    default:
+                        console.error(`Function ${functionName} is not defined.`);*/
+                }
+            };
         };
+        const nearestHospital = (user_id) => {
+            console.log('Searching for nearest hospital');
+            const hospitals = [
+                'Sharp Chula Vista Medical Center',
+                'Sharp Coronado Hospital',
+                'Sharp Grossmont Hospital',
+                'Sharp Memorial Hospital',
+                'Sharp Mesa Vista Hospital'
+            ];
+            const selectedHospital = hospitals[Math.floor(Math.random() * hospitals.length)];
+
+            openAiWs.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                    type: 'function_call_output',
+                    function_call_output: 'Successfully located hospital'
+                }
+            }));
+
+            openAiWs.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                    modalities: ['text'],
+                    instructions: `Tell the user that The nearest hospital to them is ${selectedHospital}.`
+                }
+            }));
+        };
+
+
+
+
+            openAiWs.on('message', (data) => {
+                try {
+                    const message = JSON.parse(data);
+                    if (message.type === 'function_call') {
+                        const functionName = message.name;
+                        const params = message.parameters;
+                        handleFunctionCall(functionName, params);
+                    }
+                } catch (error) {
+                    console.error('Error processing message:', error);
+                }
+            });
+            
 
         // Send initial conversation item if AI talks first
         const sendInitialConversationItem = () => {
@@ -112,7 +263,9 @@ fastify.register(async (fastify) => {
                     content: [
                         {
                             type: 'input_text',
-                            text: 'You are an AI-powered voice assistant for Sharp Healthcare, known as the "Shape Healthcare Assistant." Your primary role is to assist users with their medical needs by offering several key services. You can help users schedule appointments with healthcare providers, provide them with details about their prescription routines, including medication names and timings, and assist in finding the nearest hospital based on their location. Additionally, you are capable of displaying upcoming appointments, helping users cancel appointments when needed, and relaying important messages to caregivers or healthcare providers. Your interaction with the user should always begin with the greeting: "Hello, I am an AI-powered Voice Assistant for Sharp Healthcare. How can I help you today?" It is essential that you deliver timely, clear, and empathetic assistance, ensuring the confidentiality and security of all medical information. Your goal is to prioritize the users healthcare needs and provide accurate and efficient support in all interactions.'
+                            text: 'Greet the user by saying: "Hello, I am an AI-powered Voice Assistant for Sharp Healthcare. How can I assist you today?"After greeting, you should focus on understanding the users needs and provide tailored support based on their inquiry. Its crucial to ask clarifying questions if the users request is not fully clear, ensuring you understand their needs. Once you have understood the request, follow through by providing helpful information or taking the necessary actions to complete the request efficiently and accurately'
+
+
 
                         }
                     ]
